@@ -1,0 +1,193 @@
+commands:
+  ci.github.run:
+    description: Run GitHub Actions locally with nektos/act
+    subcommands:
+      - |
+        set -e
+
+        command -v docker >/dev/null 2>&1 || {
+          echo "Docker is required to run GitHub Actions locally"
+          exit 1
+        }
+
+        docker info >/dev/null 2>&1 || {
+          echo "Docker daemon is not available; start Docker and retry"
+          exit 1
+        }
+
+        workflows_dir=".github/workflows"
+        if [ ! -d "$workflows_dir" ]; then
+          echo "No CI workflows found in $workflows_dir"
+          exit 1
+        fi
+
+        list=$(mktemp)
+        trap 'rm -f "$list"' EXIT
+
+        find "$workflows_dir" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort > "$list"
+
+        count=$(wc -l < "$list" | tr -d ' ')
+        if [ "$count" -eq 0 ]; then
+          echo "No CI workflows found in $workflows_dir"
+          exit 1
+        fi
+
+        echo "Available CI workflows:"
+        i=0
+        while IFS= read -r workflow; do
+          i=$((i + 1))
+          echo "  $i) $workflow"
+        done < "$list"
+
+        if [ ! -t 0 ]; then
+          echo "Selecting a workflow requires an interactive terminal"
+          exit 1
+        fi
+
+        printf "Select workflow number: "
+        read -r choice
+
+        case "$choice" in
+          ''|*[!0-9]*)
+            echo "Invalid selection: $choice"
+            exit 1
+            ;;
+        esac
+
+        if [ "$choice" -lt 1 ] || [ "$choice" -gt "$count" ]; then
+          echo "Invalid selection: $choice"
+          exit 1
+        fi
+
+        selected=$(sed -n "${choice}p" "$list")
+        if [ -z "$selected" ]; then
+          echo "Invalid selection: $choice"
+          exit 1
+        fi
+
+        echo "Running $selected with nektos/act..."
+        if docker run --rm -i \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -v "$PWD":/app -w /app \
+          nektos/act -W "$selected"; then
+          echo "CI workflow $selected passed"
+        else
+          status=$?
+          echo "CI workflow $selected failed (exit $status)"
+          exit "$status"
+        fi
+  ci.gitlab.run:
+    description: Run GitLab CI locally with gitlab-ci-local in Docker
+    subcommands:
+      - |
+        set -e
+
+        command -v docker >/dev/null 2>&1 || {
+          echo "Docker is required to run GitLab CI locally"
+          exit 1
+        }
+
+        docker info >/dev/null 2>&1 || {
+          echo "Docker daemon is not available; start Docker and retry"
+          exit 1
+        }
+
+        job="${1:-}"
+        file="${2:-}"
+
+        # gitlab-ci-local запускает job-контейнеры через Docker хоста, поэтому
+        # путь проекта должен совпадать внутри контейнера и на хосте.
+        run_ci() {
+          docker run --rm -i \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":"$PWD" -w "$PWD" \
+            firecow/gitlab-ci-local "$@"
+        }
+
+        if [ -n "$file" ]; then
+          if [ ! -f "$file" ]; then
+            echo "GitLab CI file not found: $file"
+            exit 1
+          fi
+          selected="$file"
+        else
+          list=$(mktemp)
+          trap 'rm -f "$list"' EXIT
+
+          for candidate in .gitlab-ci.yml .gitlab-ci.yaml .gitlab-ci-local.yml .gitlab-ci-local.yaml; do
+            if [ -f "$candidate" ]; then
+              printf '%s\n' "$candidate" >> "$list"
+            fi
+          done
+
+          count=$(wc -l < "$list" | tr -d ' ')
+          if [ "$count" -eq 0 ]; then
+            echo "No GitLab CI files found in the current directory"
+            exit 1
+          fi
+
+          if [ "$count" -eq 1 ]; then
+            selected=$(cat "$list")
+          else
+            echo "Available GitLab CI files:"
+            i=0
+            while IFS= read -r candidate; do
+              i=$((i + 1))
+              echo "  $i) $candidate"
+            done < "$list"
+
+            if [ ! -t 0 ]; then
+              echo "Selecting a file requires an interactive terminal"
+              exit 1
+            fi
+
+            printf "Select file number: "
+            read -r choice
+
+            case "$choice" in
+              ''|*[!0-9]*)
+                echo "Invalid selection: $choice"
+                exit 1
+                ;;
+            esac
+
+            if [ "$choice" -lt 1 ] || [ "$choice" -gt "$count" ]; then
+              echo "Invalid selection: $choice"
+              exit 1
+            fi
+
+            selected=$(sed -n "${choice}p" "$list")
+          fi
+        fi
+
+        if [ -z "$job" ]; then
+          echo "Jobs in $selected:"
+          run_ci --file "$selected" --list
+
+          if [ ! -t 0 ]; then
+            echo "Pass a job name: dev recipe ci.gitlab.run <job> [file]"
+            exit 1
+          fi
+
+          printf "Job name to run (empty for all jobs): "
+          read -r job
+        fi
+
+        echo "Running GitLab CI from $selected..."
+        if [ -n "$job" ]; then
+          if run_ci --file "$selected" "$job"; then
+            echo "GitLab CI job $job passed"
+          else
+            status=$?
+            echo "GitLab CI job $job failed (exit $status)"
+            exit "$status"
+          fi
+        else
+          if run_ci --file "$selected"; then
+            echo "GitLab CI passed"
+          else
+            status=$?
+            echo "GitLab CI failed (exit $status)"
+            exit "$status"
+          fi
+        fi

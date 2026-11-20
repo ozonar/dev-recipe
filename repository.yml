@@ -1,0 +1,10 @@
+recipes:
+  test:
+    description: Test recipe
+    file: recipes/test.yml
+  ci.github.run:
+    description: Run GitHub Actions locally with nektos/act
+    file: recipes/ci.yml
+  ci.gitlab.run:
+    description: Run GitLab CI locally with gitlab-ci-local in Docker
+    file: recipes/ci.yml

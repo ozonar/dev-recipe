@@ -1,0 +1,5 @@
+commands:
+  test:
+    description: Test resipe
+    subcommands:
+      - echo "Test works"
